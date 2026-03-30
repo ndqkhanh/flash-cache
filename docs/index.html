@@ -1,0 +1,1488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FlashCache — Distributed In-Memory Cache</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    /* ── CSS CUSTOM PROPERTIES ──────────────────────────────────────── */
+    :root {
+      --bg:          #090d14;
+      --surface-1:   #0e1420;
+      --surface-2:   #141b27;
+      --surface-3:   #1a2235;
+      --border:      rgba(230, 126, 34, 0.15);
+      --border-dim:  rgba(255,255,255,0.06);
+      --accent:      #E67E22;
+      --accent-dim:  rgba(230, 126, 34, 0.12);
+      --accent-glow: rgba(230, 126, 34, 0.25);
+      --text-hi:     #f0f2f5;
+      --text-mid:    #8a9ab5;
+      --text-lo:     #4a5568;
+      --green:       #27ae60;
+      --red:         #e74c3c;
+      --blue:        #3498db;
+      --mono:        'JetBrains Mono', monospace;
+      --serif:       'DM Serif Display', serif;
+      --sans:        'DM Sans', sans-serif;
+      --radius:      12px;
+      --radius-lg:   20px;
+    }
+
+    /* ── RESET & BASE ───────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; font-size: 16px; }
+
+    body {
+      background: var(--bg);
+      color: var(--text-hi);
+      font-family: var(--sans);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    ::selection { background: var(--accent); color: #000; }
+
+    /* ── SCROLLBAR ──────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: var(--surface-1); }
+    ::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 3px; }
+
+    /* ── UTILITY ────────────────────────────────────────────────────── */
+    .container { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+
+    /* ── NOISE TEXTURE OVERLAY ──────────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.4;
+    }
+
+    /* ── GRID BACKGROUND ────────────────────────────────────────────── */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(230,126,34,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(230,126,34,0.03) 1px, transparent 1px);
+      background-size: 60px 60px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    section, header, footer, nav { position: relative; z-index: 1; }
+
+    /* ── ANIMATIONS ─────────────────────────────────────────────────── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(28px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes pulse-glow {
+      0%, 100% { box-shadow: 0 0 20px var(--accent-glow); }
+      50%       { box-shadow: 0 0 40px rgba(230,126,34,0.45); }
+    }
+    @keyframes scanline {
+      from { transform: translateY(-100%); }
+      to   { transform: translateY(100vh); }
+    }
+    @keyframes counter {
+      from { opacity: 0; transform: scale(0.8); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+    @keyframes borderPulse {
+      0%, 100% { border-color: rgba(230,126,34,0.15); }
+      50%       { border-color: rgba(230,126,34,0.5); }
+    }
+
+    .fade-up {
+      opacity: 0;
+      transform: translateY(28px);
+      transition: opacity 0.7s cubic-bezier(0.16,1,0.3,1), transform 0.7s cubic-bezier(0.16,1,0.3,1);
+    }
+    .fade-up.visible { opacity: 1; transform: translateY(0); }
+
+    /* ── HEADER ─────────────────────────────────────────────────────── */
+    header {
+      padding: 120px 0 100px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    header::before {
+      content: '';
+      position: absolute;
+      top: -200px; left: 50%; transform: translateX(-50%);
+      width: 800px; height: 600px;
+      background: radial-gradient(ellipse at center, rgba(230,126,34,0.12) 0%, transparent 65%);
+      pointer-events: none;
+    }
+
+    .header-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: var(--accent-dim);
+      border: 1px solid var(--border);
+      padding: 6px 16px;
+      border-radius: 100px;
+      margin-bottom: 28px;
+      animation: fadeUp 0.8s cubic-bezier(0.16,1,0.3,1) 0.1s both;
+    }
+
+    .header-eyebrow::before {
+      content: '';
+      width: 6px; height: 6px;
+      background: var(--accent);
+      border-radius: 50%;
+      animation: pulse-glow 2s ease-in-out infinite;
+    }
+
+    h1.logo {
+      font-family: var(--serif);
+      font-size: clamp(3.2rem, 8vw, 7rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.0;
+      color: var(--text-hi);
+      animation: fadeUp 0.8s cubic-bezier(0.16,1,0.3,1) 0.2s both;
+    }
+
+    h1.logo span {
+      color: var(--accent);
+      position: relative;
+    }
+
+    .header-subtitle {
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      letter-spacing: 0.12em;
+      color: var(--text-mid);
+      text-transform: uppercase;
+      margin-top: 10px;
+      animation: fadeUp 0.8s cubic-bezier(0.16,1,0.3,1) 0.3s both;
+    }
+
+    .header-tagline {
+      max-width: 680px;
+      margin: 28px auto 0;
+      font-size: 1.05rem;
+      color: var(--text-mid);
+      line-height: 1.75;
+      animation: fadeUp 0.8s cubic-bezier(0.16,1,0.3,1) 0.4s both;
+    }
+
+    .header-tagline strong { color: var(--text-hi); font-weight: 500; }
+
+    .header-actions {
+      display: flex;
+      justify-content: center;
+      gap: 14px;
+      margin-top: 40px;
+      flex-wrap: wrap;
+      animation: fadeUp 0.8s cubic-bezier(0.16,1,0.3,1) 0.5s both;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 26px;
+      border-radius: var(--radius);
+      font-family: var(--sans);
+      font-size: 0.9rem;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      text-decoration: none;
+      transition: all 0.22s cubic-bezier(0.16,1,0.3,1);
+      cursor: pointer;
+      border: none;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #000;
+    }
+    .btn-primary:hover {
+      background: #f39c12;
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(230,126,34,0.4);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-hi);
+      border: 1px solid var(--border-dim);
+    }
+    .btn-ghost:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    /* ── STATS BAR ──────────────────────────────────────────────────── */
+    .stats-bar {
+      padding: 0 0 80px;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 2px;
+      border: 1px solid var(--border-dim);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      background: var(--border-dim);
+    }
+
+    .stat-item {
+      background: var(--surface-1);
+      padding: 36px 28px;
+      text-align: center;
+      transition: background 0.2s;
+    }
+    .stat-item:hover { background: var(--surface-2); }
+
+    .stat-value {
+      font-family: var(--mono);
+      font-size: clamp(2.2rem, 4vw, 3.2rem);
+      font-weight: 700;
+      color: var(--accent);
+      line-height: 1;
+      display: block;
+    }
+
+    .stat-label {
+      font-size: 0.8rem;
+      color: var(--text-mid);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-top: 8px;
+      font-weight: 500;
+    }
+
+    /* ── SECTION HEADINGS ───────────────────────────────────────────── */
+    .section { padding: 80px 0; }
+
+    .section-label {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 14px;
+      display: block;
+    }
+
+    h2.section-title {
+      font-family: var(--serif);
+      font-size: clamp(2rem, 4vw, 3rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      color: var(--text-hi);
+      line-height: 1.2;
+      margin-bottom: 20px;
+    }
+
+    .section-desc {
+      max-width: 620px;
+      color: var(--text-mid);
+      font-size: 1rem;
+      line-height: 1.75;
+      margin-bottom: 56px;
+    }
+
+    /* ── KEY INNOVATION ─────────────────────────────────────────────── */
+    .innovation-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 48px;
+      align-items: center;
+    }
+
+    .innovation-text h2 { margin-bottom: 20px; }
+
+    .innovation-text p {
+      color: var(--text-mid);
+      line-height: 1.8;
+      margin-bottom: 16px;
+    }
+
+    .innovation-text p strong { color: var(--text-hi); font-weight: 500; }
+
+    .protocol-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .protocol-item {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      background: var(--surface-1);
+      border: 1px solid var(--border-dim);
+      border-radius: var(--radius);
+      padding: 18px 22px;
+      transition: all 0.22s;
+    }
+    .protocol-item:hover {
+      border-color: var(--accent);
+      background: var(--surface-2);
+      transform: translateX(4px);
+    }
+
+    .protocol-icon {
+      width: 40px; height: 40px;
+      background: var(--accent-dim);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      font-family: var(--mono);
+      font-size: 0.62rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.05em;
+    }
+
+    .protocol-info strong {
+      display: block;
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: var(--text-hi);
+    }
+    .protocol-info span {
+      font-size: 0.78rem;
+      color: var(--text-mid);
+    }
+
+    /* ── ARCHITECTURE DIAGRAM ───────────────────────────────────────── */
+    .diagram-wrapper {
+      background: var(--surface-1);
+      border: 1px solid var(--border-dim);
+      border-radius: var(--radius-lg);
+      padding: 48px 32px;
+      overflow-x: auto;
+    }
+
+    .mermaid {
+      display: flex;
+      justify-content: center;
+      min-height: 300px;
+    }
+
+    /* ── COMPONENT CARDS (EXPANDABLE) ───────────────────────────────── */
+    .components-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+
+    .comp-card {
+      background: var(--surface-1);
+      border: 1px solid var(--border-dim);
+      border-radius: var(--radius);
+      overflow: hidden;
+      transition: border-color 0.22s;
+    }
+    .comp-card:hover { border-color: var(--border); }
+    .comp-card.open { border-color: var(--accent); }
+
+    .comp-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 20px 22px;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.18s;
+    }
+    .comp-header:hover { background: var(--surface-2); }
+
+    .comp-num {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: var(--accent);
+      background: var(--accent-dim);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 9px;
+      flex-shrink: 0;
+    }
+
+    .comp-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--text-hi);
+      flex: 1;
+    }
+
+    .comp-chevron {
+      color: var(--text-lo);
+      transition: transform 0.3s cubic-bezier(0.16,1,0.3,1);
+      flex-shrink: 0;
+    }
+    .comp-card.open .comp-chevron { transform: rotate(180deg); color: var(--accent); }
+
+    .comp-body {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.45s cubic-bezier(0.16,1,0.3,1);
+    }
+    .comp-card.open .comp-body { max-height: 400px; }
+
+    .comp-content {
+      padding: 0 22px 22px;
+      border-top: 1px solid var(--border-dim);
+    }
+
+    .comp-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-bottom: 14px;
+      padding-top: 16px;
+    }
+
+    .tag {
+      font-family: var(--mono);
+      font-size: 0.67rem;
+      font-weight: 500;
+      letter-spacing: 0.06em;
+      padding: 4px 10px;
+      border-radius: 6px;
+      background: var(--surface-3);
+      color: var(--text-mid);
+      border: 1px solid var(--border-dim);
+    }
+    .tag.accent {
+      background: var(--accent-dim);
+      color: var(--accent);
+      border-color: var(--border);
+    }
+
+    .comp-desc {
+      font-size: 0.88rem;
+      color: var(--text-mid);
+      line-height: 1.75;
+    }
+
+    /* ── USE CASES ──────────────────────────────────────────────────── */
+    .usecases-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+
+    .usecase-card {
+      background: var(--surface-1);
+      border: 1px solid var(--border-dim);
+      border-radius: var(--radius-lg);
+      padding: 32px 26px;
+      transition: all 0.25s cubic-bezier(0.16,1,0.3,1);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .usecase-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent), transparent);
+      opacity: 0;
+      transition: opacity 0.25s;
+    }
+
+    .usecase-card:hover {
+      border-color: var(--border);
+      transform: translateY(-4px);
+      box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+    }
+    .usecase-card:hover::before { opacity: 1; }
+
+    .usecase-icon {
+      width: 48px; height: 48px;
+      border-radius: 12px;
+      background: var(--accent-dim);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 20px;
+      font-size: 1.3rem;
+    }
+
+    .usecase-title {
+      font-weight: 700;
+      font-size: 1rem;
+      color: var(--text-hi);
+      margin-bottom: 10px;
+    }
+
+    .usecase-desc {
+      font-size: 0.87rem;
+      color: var(--text-mid);
+      line-height: 1.7;
+    }
+
+    /* ── COMPARISON TABLE ───────────────────────────────────────────── */
+    .table-wrapper {
+      overflow-x: auto;
+      border: 1px solid var(--border-dim);
+      border-radius: var(--radius-lg);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+
+    thead tr {
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border-dim);
+    }
+
+    thead th {
+      padding: 18px 20px;
+      text-align: left;
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-mid);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    thead th:first-child { color: var(--text-hi); }
+    thead th.highlight { color: var(--accent); }
+
+    tbody tr {
+      border-bottom: 1px solid var(--border-dim);
+      transition: background 0.15s;
+    }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: var(--surface-1); }
+
+    tbody td {
+      padding: 16px 20px;
+      color: var(--text-mid);
+      vertical-align: middle;
+    }
+
+    tbody td:first-child {
+      color: var(--text-hi);
+      font-weight: 500;
+      font-size: 0.9rem;
+    }
+
+    .check {
+      color: var(--green);
+      font-size: 1rem;
+    }
+    .cross {
+      color: var(--text-lo);
+      font-size: 0.9rem;
+    }
+    .partial {
+      color: var(--blue);
+      font-size: 0.75rem;
+      font-family: var(--mono);
+    }
+
+    .col-flash td:nth-child(2) {
+      background: rgba(230,126,34,0.04);
+      border-left: 2px solid rgba(230,126,34,0.3);
+      border-right: 1px solid rgba(230,126,34,0.15);
+    }
+
+    /* ── TECH STACK TAGS ────────────────────────────────────────────── */
+    .tech-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .tech-tag {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      font-weight: 500;
+      padding: 9px 18px;
+      border-radius: 8px;
+      background: var(--surface-2);
+      border: 1px solid var(--border-dim);
+      color: var(--text-hi);
+      transition: all 0.2s;
+      cursor: default;
+    }
+    .tech-tag:hover {
+      background: var(--accent-dim);
+      border-color: var(--accent);
+      color: var(--accent);
+      transform: translateY(-2px);
+    }
+
+    /* ── DIVIDER ────────────────────────────────────────────────────── */
+    .divider {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--border-dim), transparent);
+      margin: 0;
+    }
+
+    /* ── FOOTER ─────────────────────────────────────────────────────── */
+    footer {
+      padding: 48px 0;
+      text-align: center;
+      border-top: 1px solid var(--border-dim);
+    }
+
+    .footer-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      color: var(--text-mid);
+      background: var(--surface-1);
+      border: 1px solid var(--border-dim);
+      border-radius: 100px;
+      padding: 10px 22px;
+      margin-bottom: 20px;
+    }
+
+    .footer-badge .dot {
+      width: 6px; height: 6px;
+      background: var(--accent);
+      border-radius: 50%;
+    }
+
+    .footer-author {
+      font-size: 0.82rem;
+      color: var(--text-lo);
+    }
+
+    .footer-author a {
+      color: var(--accent);
+      text-decoration: none;
+      transition: opacity 0.2s;
+    }
+    .footer-author a:hover { opacity: 0.75; }
+
+    /* ── NARROW NAV BAR ─────────────────────────────────────────────── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(9,13,20,0.85);
+      backdrop-filter: blur(20px) saturate(180%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border-bottom: 1px solid var(--border-dim);
+      padding: 0;
+    }
+
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 56px;
+    }
+
+    .nav-logo {
+      font-family: var(--mono);
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.04em;
+      text-decoration: none;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 32px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      font-size: 0.82rem;
+      color: var(--text-mid);
+      text-decoration: none;
+      letter-spacing: 0.02em;
+      transition: color 0.18s;
+    }
+    .nav-links a:hover { color: var(--text-hi); }
+
+    .nav-cta {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--accent);
+      text-decoration: none;
+      border: 1px solid var(--border);
+      padding: 7px 14px;
+      border-radius: 7px;
+      transition: all 0.2s;
+    }
+    .nav-cta:hover { background: var(--accent-dim); }
+
+    /* ── RESPONSIVE ─────────────────────────────────────────────────── */
+    @media (max-width: 900px) {
+      .innovation-layout { grid-template-columns: 1fr; }
+      .components-grid { grid-template-columns: 1fr; }
+      .usecases-grid { grid-template-columns: repeat(2, 1fr); }
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+      .nav-links { display: none; }
+    }
+
+    @media (max-width: 600px) {
+      .usecases-grid { grid-template-columns: 1fr; }
+      .stats-grid { grid-template-columns: 1fr; }
+      header { padding: 80px 0 60px; }
+      .section { padding: 56px 0; }
+    }
+
+    /* ── MERMAID OVERRIDES ──────────────────────────────────────────── */
+    .mermaid svg {
+      max-width: 100%;
+      height: auto;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── NAV ───────────────────────────────────────────────────────────── -->
+<nav aria-label="Site navigation">
+  <div class="container nav-inner">
+    <a href="#top" class="nav-logo">FlashCache</a>
+    <ul class="nav-links">
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#components">Components</a></li>
+      <li><a href="#usecases">Use Cases</a></li>
+      <li><a href="#comparison">Comparison</a></li>
+    </ul>
+    <a href="https://github.com/ndqkhanh/flash-cache" class="nav-cta" target="_blank" rel="noopener noreferrer">GitHub →</a>
+  </div>
+</nav>
+
+<!-- ── HERO ──────────────────────────────────────────────────────────── -->
+<header id="top">
+  <div class="container">
+    <div class="header-eyebrow">Java 21 &nbsp;·&nbsp; Zero Framework Dependencies</div>
+    <h1 class="logo">Flash<span>Cache</span></h1>
+    <p class="header-subtitle">Distributed In-Memory Cache</p>
+    <p class="header-tagline">
+      <strong>Three protocol stacks in one system</strong> — a distributed cache that speaks
+      RESP, HTTP/2, and WebSocket, built from raw Java NIO with
+      <strong>zero framework dependencies</strong>.
+    </p>
+    <div class="header-actions">
+      <a href="https://github.com/ndqkhanh/flash-cache" class="btn btn-primary" target="_blank" rel="noopener noreferrer">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.54-1.38-1.33-1.75-1.33-1.75-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.17 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 3-.4c1.02 0 2.04.13 3 .4 2.28-1.55 3.29-1.23 3.29-1.23.66 1.65.25 2.87.12 3.17.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.82.58C20.56 21.8 24 17.3 24 12c0-6.63-5.37-12-12-12z"/></svg>
+        View on GitHub
+      </a>
+      <a href="#architecture" class="btn btn-ghost">Explore Architecture</a>
+    </div>
+  </div>
+</header>
+
+<!-- ── STATS BAR ──────────────────────────────────────────────────────── -->
+<section class="stats-bar" aria-label="Project statistics">
+  <div class="container">
+    <div class="stats-grid fade-up">
+      <div class="stat-item">
+        <span class="stat-value" data-target="256">256</span>
+        <span class="stat-label">Tests, 0 Failures</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value" data-target="6">6</span>
+        <span class="stat-label">Modules</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value">3</span>
+        <span class="stat-label">Protocol Stacks</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value">O(1)</span>
+        <span class="stat-label">LRU Eviction</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── KEY INNOVATION ─────────────────────────────────────────────────── -->
+<section class="section" aria-labelledby="innovation-title">
+  <div class="container">
+    <div class="innovation-layout">
+      <div class="innovation-text fade-up">
+        <span class="section-label">Key Innovation</span>
+        <h2 class="section-title" id="innovation-title">Three Protocol Stacks,<br>One Server</h2>
+        <p>
+          FlashCache speaks three wire protocols from a <strong>single NIO event loop</strong>:
+          <strong>RESP</strong> (Redis-compatible) for cache operations,
+          <strong>HTTP/2</strong> with HPACK header compression for REST API and admin,
+          and <strong>WebSocket</strong> for real-time cache invalidation notifications.
+        </p>
+        <p>
+          This demonstrates deep networking knowledge — each protocol is
+          <strong>hand-built from ByteBuffers</strong>, not imported from a library.
+          No Netty, no Spring, no Jackson — pure NIO from socket accept to response frame.
+        </p>
+      </div>
+      <div class="protocol-stack fade-up" style="transition-delay: 0.15s">
+        <div class="protocol-item">
+          <div class="protocol-icon">RESP</div>
+          <div class="protocol-info">
+            <strong>Redis Serialization Protocol</strong>
+            <span>Cache ops, pipelining, bulk strings, arrays</span>
+          </div>
+        </div>
+        <div class="protocol-item">
+          <div class="protocol-icon">H2</div>
+          <div class="protocol-info">
+            <strong>HTTP/2 + HPACK</strong>
+            <span>REST API, admin, stream multiplexing, header compression</span>
+          </div>
+        </div>
+        <div class="protocol-item">
+          <div class="protocol-icon">WS</div>
+          <div class="protocol-info">
+            <strong>WebSocket RFC 6455</strong>
+            <span>Real-time invalidation, pub/sub broadcast, frame codec</span>
+          </div>
+        </div>
+        <div class="protocol-item">
+          <div class="protocol-icon">TLS</div>
+          <div class="protocol-info">
+            <strong>TLS 1.3 Termination</strong>
+            <span>SSLContext, certificate management, handshake</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── ARCHITECTURE DIAGRAM ───────────────────────────────────────────── -->
+<section class="section" id="architecture" aria-labelledby="arch-title">
+  <div class="container">
+    <span class="section-label fade-up">System Design</span>
+    <h2 class="section-title fade-up" id="arch-title">Architecture Overview</h2>
+    <p class="section-desc fade-up">
+      Every connection enters a single non-blocking Selector loop. Protocol routing happens
+      before any application logic, so all three stacks share the same I/O thread pool.
+    </p>
+    <div class="diagram-wrapper fade-up">
+      <div class="mermaid">
+flowchart TD
+    C["Clients<br/>(Redis CLI / Browser / HTTP)"]:::client
+
+    subgraph NIO["NIO Event Loop — Java Selector"]
+        direction TB
+        SEL["Selector<br/>(select / epoll)"]:::nio
+        PR["Protocol Router<br/>(byte sniff)"]:::nio
+        SEL --> PR
+    end
+
+    subgraph HANDLERS["Protocol Handlers"]
+        direction LR
+        RESP["RESP Handler<br/>Redis Wire Protocol"]:::handler
+        HTTP["HTTP/2 Handler<br/>HPACK + Streams"]:::handler
+        WS["WebSocket Handler<br/>Frames + Upgrade"]:::handler
+    end
+
+    subgraph CORE["Cache Engine"]
+        direction TB
+        LRU["LRU Eviction<br/>O(1) doubly-linked list"]:::core
+        TTL["TTL Scheduler<br/>lazy + active expiry"]:::core
+        DT["Data Types<br/>String · Hash · List · Set"]:::core
+    end
+
+    subgraph CLUSTER["Cluster Layer"]
+        direction TB
+        CHR["Consistent Hash Ring<br/>Virtual Nodes"]:::cluster
+        SR["Shard Router"]:::cluster
+        CG["Cluster Gossip<br/>SWIM-lite"]:::cluster
+        REP["Replication<br/>Async primary→replica"]:::cluster
+    end
+
+    subgraph PUBSUB["Pub/Sub Engine"]
+        direction TB
+        CH["Channel Subscriptions<br/>Pattern Matching"]:::ps
+        KN["Keyspace Notify"]:::ps
+        WSB["WebSocket Broadcast"]:::ps
+    end
+
+    C -->|"TCP connect"| SEL
+    PR --> RESP & HTTP & WS
+    RESP & HTTP & WS --> CORE
+    CORE --> CLUSTER
+    CORE --> PUBSUB
+    KN --> WSB
+
+    classDef client  fill:#1a2235,stroke:#E67E22,stroke-width:2px,color:#f0f2f5
+    classDef nio     fill:#141b27,stroke:#3498db,stroke-width:1.5px,color:#f0f2f5
+    classDef handler fill:#0e1420,stroke:#E67E22,stroke-width:1px,color:#E67E22
+    classDef core    fill:#0e1420,stroke:#27ae60,stroke-width:1px,color:#f0f2f5
+    classDef cluster fill:#0e1420,stroke:#8e44ad,stroke-width:1px,color:#f0f2f5
+    classDef ps      fill:#0e1420,stroke:#3498db,stroke-width:1px,color:#f0f2f5
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── COMPONENT DEEP DIVE ────────────────────────────────────────────── -->
+<section class="section" id="components" aria-labelledby="comp-title">
+  <div class="container">
+    <span class="section-label fade-up">Component Deep Dive</span>
+    <h2 class="section-title fade-up" id="comp-title">Every Byte Intentional</h2>
+    <p class="section-desc fade-up">
+      Click any component to expand implementation details. Each subsystem is hand-built
+      with no external runtime dependencies.
+    </p>
+    <div class="components-grid">
+
+      <!-- Card 1 -->
+      <div class="comp-card fade-up" role="region" aria-label="Cache Engine">
+        <button class="comp-header" aria-expanded="false" onclick="toggleCard(this)">
+          <span class="comp-num">01</span>
+          <span class="comp-title">Cache Engine</span>
+          <svg class="comp-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="comp-body" role="group">
+          <div class="comp-content">
+            <div class="comp-tags">
+              <span class="tag accent">O(1) LRU</span>
+              <span class="tag">ConcurrentHashMap</span>
+              <span class="tag">TTL Scheduler</span>
+              <span class="tag">Doubly-Linked List</span>
+            </div>
+            <p class="comp-desc">
+              Core storage backed by <code>ConcurrentHashMap</code> for thread-safe reads without locking.
+              LRU eviction uses a doubly-linked list + HashMap pair: get and put are O(1) with no list traversal.
+              TTL uses a combination of lazy expiry (check-on-access) and an active scheduler that sweeps
+              expired keys periodically, keeping memory bounded without excessive CPU overhead.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2 -->
+      <div class="comp-card fade-up" style="transition-delay:0.05s" role="region" aria-label="RESP Protocol">
+        <button class="comp-header" aria-expanded="false" onclick="toggleCard(this)">
+          <span class="comp-num">02</span>
+          <span class="comp-title">RESP Protocol</span>
+          <svg class="comp-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="comp-body" role="group">
+          <div class="comp-content">
+            <div class="comp-tags">
+              <span class="tag accent">Redis Compatible</span>
+              <span class="tag">Pipelining</span>
+              <span class="tag">Bulk Strings</span>
+              <span class="tag">Arrays</span>
+            </div>
+            <p class="comp-desc">
+              Full Redis Serialization Protocol decoder and encoder built on top of Java NIO ByteBuffers.
+              Supports simple strings, errors, integers, bulk strings, and arrays. Command pipelining is
+              handled natively — multiple commands in one TCP segment are processed without round-trip wait.
+              Compatible with redis-cli, Lettuce, and Jedis clients.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 3 -->
+      <div class="comp-card fade-up" style="transition-delay:0.10s" role="region" aria-label="HTTP/1.1 + HTTP/2">
+        <button class="comp-header" aria-expanded="false" onclick="toggleCard(this)">
+          <span class="comp-num">03</span>
+          <span class="comp-title">HTTP/1.1 + HTTP/2</span>
+          <svg class="comp-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="comp-body" role="group">
+          <div class="comp-content">
+            <div class="comp-tags">
+              <span class="tag accent">HPACK</span>
+              <span class="tag">Stream Multiplexing</span>
+              <span class="tag">Frame Parser</span>
+              <span class="tag">REST API</span>
+            </div>
+            <p class="comp-desc">
+              Hand-built HTTP/1.1 request parser for upgrade negotiation and REST fallback.
+              HTTP/2 framing layer handles SETTINGS, HEADERS, DATA, WINDOW_UPDATE, and RST_STREAM frames.
+              HPACK header compression implemented with static table (61 entries) and dynamic table with
+              LRU eviction, reducing header overhead by up to 85% on repeated requests.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 4 -->
+      <div class="comp-card fade-up" style="transition-delay:0.15s" role="region" aria-label="WebSocket">
+        <button class="comp-header" aria-expanded="false" onclick="toggleCard(this)">
+          <span class="comp-num">04</span>
+          <span class="comp-title">WebSocket</span>
+          <svg class="comp-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="comp-body" role="group">
+          <div class="comp-content">
+            <div class="comp-tags">
+              <span class="tag accent">RFC 6455</span>
+              <span class="tag">Frame Codec</span>
+              <span class="tag">Masking</span>
+              <span class="tag">Ping/Pong</span>
+            </div>
+            <p class="comp-desc">
+              RFC 6455 upgrade handshake from HTTP/1.1 via Sec-WebSocket-Key / Accept header computation
+              (SHA-1 + base64, no library). Frame codec handles FIN bit, opcode, masking key XOR,
+              and variable-length payloads (7-bit, 16-bit, 64-bit length variants).
+              Ping/Pong keepalive is automatic, close handshake is bidirectional and graceful.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 5 -->
+      <div class="comp-card fade-up" style="transition-delay:0.20s" role="region" aria-label="TLS Manager">
+        <button class="comp-header" aria-expanded="false" onclick="toggleCard(this)">
+          <span class="comp-num">05</span>
+          <span class="comp-title">TLS Manager</span>
+          <svg class="comp-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="comp-body" role="group">
+          <div class="comp-content">
+            <div class="comp-tags">
+              <span class="tag accent">TLS 1.3</span>
+              <span class="tag">SSLContext</span>
+              <span class="tag">SNI</span>
+              <span class="tag">Certificate Mgmt</span>
+            </div>
+            <p class="comp-desc">
+              TLS termination using Java's built-in SSLEngine, configured for TLSv1.3 only with
+              strong cipher suites. SSLContext bootstrapped from JKS or PKCS#12 keystores.
+              Non-blocking handshake integrated into the NIO Selector loop without blocking threads.
+              Supports SNI for virtual hosting and hot certificate reloading without server restart.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 6 -->
+      <div class="comp-card fade-up" style="transition-delay:0.25s" role="region" aria-label="NIO Server">
+        <button class="comp-header" aria-expanded="false" onclick="toggleCard(this)">
+          <span class="comp-num">06</span>
+          <span class="comp-title">NIO Server</span>
+          <svg class="comp-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="comp-body" role="group">
+          <div class="comp-content">
+            <div class="comp-tags">
+              <span class="tag accent">NIO Selector</span>
+              <span class="tag">Non-blocking I/O</span>
+              <span class="tag">Event Loop</span>
+              <span class="tag">Java 21</span>
+            </div>
+            <p class="comp-desc">
+              Single Selector event loop multiplexes thousands of connections on one thread.
+              OP_ACCEPT, OP_READ, OP_WRITE interest sets managed per channel. Write buffers are
+              queued when the socket is not ready, retried on next OP_WRITE event — zero blocking.
+              Java 21 Virtual Threads used for handler dispatch to keep the selector loop tight
+              while allowing handlers to do blocking work naturally.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 7 -->
+      <div class="comp-card fade-up" style="transition-delay:0.05s" role="region" aria-label="Consistent Hashing">
+        <button class="comp-header" aria-expanded="false" onclick="toggleCard(this)">
+          <span class="comp-num">07</span>
+          <span class="comp-title">Consistent Hashing</span>
+          <svg class="comp-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="comp-body" role="group">
+          <div class="comp-content">
+            <div class="comp-tags">
+              <span class="tag accent">Hash Ring</span>
+              <span class="tag">Virtual Nodes</span>
+              <span class="tag">Minimal Redistribution</span>
+              <span class="tag">TreeMap</span>
+            </div>
+            <p class="comp-desc">
+              Hash ring implemented with a <code>TreeMap&lt;Long, Node&gt;</code> for O(log n) key lookup via
+              <code>ceilingKey()</code>. Each physical node is mapped to 150+ virtual nodes to achieve
+              uniform distribution. When a node joins or leaves, only 1/N keys are remapped on average —
+              far superior to modulo-based sharding, which remaps nearly all keys on topology change.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 8 -->
+      <div class="comp-card fade-up" style="transition-delay:0.10s" role="region" aria-label="Cluster Gossip">
+        <button class="comp-header" aria-expanded="false" onclick="toggleCard(this)">
+          <span class="comp-num">08</span>
+          <span class="comp-title">Cluster Gossip</span>
+          <svg class="comp-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="comp-body" role="group">
+          <div class="comp-content">
+            <div class="comp-tags">
+              <span class="tag accent">SWIM-lite</span>
+              <span class="tag">Failure Detection</span>
+              <span class="tag">Membership</span>
+              <span class="tag">Epidemic Broadcast</span>
+            </div>
+            <p class="comp-desc">
+              Simplified SWIM (Scalable Weakly-consistent Infection-style Membership) protocol for
+              peer discovery and failure detection. Nodes periodically ping a random subset of peers;
+              suspected nodes are indirect-pinged via k third-party nodes before marked down.
+              Membership state propagates via piggybacking on existing messages — O(log N) dissemination time.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 9 -->
+      <div class="comp-card fade-up" style="transition-delay:0.15s" role="region" aria-label="Replication">
+        <button class="comp-header" aria-expanded="false" onclick="toggleCard(this)">
+          <span class="comp-num">09</span>
+          <span class="comp-title">Replication</span>
+          <svg class="comp-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="comp-body" role="group">
+          <div class="comp-content">
+            <div class="comp-tags">
+              <span class="tag accent">Async Replication</span>
+              <span class="tag">Sequence Tracking</span>
+              <span class="tag">Primary → Replica</span>
+              <span class="tag">WAL</span>
+            </div>
+            <p class="comp-desc">
+              Async primary-to-replica replication with monotonic sequence numbers. The primary logs
+              mutations into an in-memory write-ahead log and streams them to replicas.
+              Replicas track their applied sequence offset; on reconnect, they request a delta replay
+              from the primary rather than a full resync, minimising bandwidth on transient failures.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 10 -->
+      <div class="comp-card fade-up" style="transition-delay:0.20s" role="region" aria-label="Pub/Sub">
+        <button class="comp-header" aria-expanded="false" onclick="toggleCard(this)">
+          <span class="comp-num">10</span>
+          <span class="comp-title">Pub/Sub Engine</span>
+          <svg class="comp-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="comp-body" role="group">
+          <div class="comp-content">
+            <div class="comp-tags">
+              <span class="tag accent">Channel Subscribe</span>
+              <span class="tag">Pattern Match</span>
+              <span class="tag">Keyspace Notify</span>
+              <span class="tag">WS Broadcast</span>
+            </div>
+            <p class="comp-desc">
+              Pub/sub with exact channel subscriptions and glob pattern matching (PSUBSCRIBE).
+              Keyspace notifications emit events on SET, DEL, EXPIRE, and EVICT operations,
+              enabling cache invalidation without polling. Subscribers connected over WebSocket
+              receive push frames in real-time, no long-polling, no SSE fallback required.
+            </p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── USE CASES ──────────────────────────────────────────────────────── -->
+<section class="section" id="usecases" aria-labelledby="uc-title">
+  <div class="container">
+    <span class="section-label fade-up">Applications</span>
+    <h2 class="section-title fade-up" id="uc-title">What You Can Build</h2>
+    <p class="section-desc fade-up">
+      FlashCache is production-capable for a wide range of distributed systems problems —
+      anywhere low-latency shared state is required.
+    </p>
+    <div class="usecases-grid">
+
+      <div class="usecase-card fade-up">
+        <div class="usecase-icon" aria-hidden="true">&#x1F511;</div>
+        <div class="usecase-title">Session Storage</div>
+        <p class="usecase-desc">Sub-millisecond session lookups for web applications. Store user tokens with TTL; automatic expiry keeps the store clean without background jobs.</p>
+      </div>
+
+      <div class="usecase-card fade-up" style="transition-delay:0.05s">
+        <div class="usecase-icon" aria-hidden="true">&#x26A1;</div>
+        <div class="usecase-title">API Response Caching</div>
+        <p class="usecase-desc">Cache expensive database queries or third-party API calls with configurable TTL. HTTP/2 REST API makes integration seamless from any language.</p>
+      </div>
+
+      <div class="usecase-card fade-up" style="transition-delay:0.10s">
+        <div class="usecase-icon" aria-hidden="true">&#x1F4CA;</div>
+        <div class="usecase-title">Real-Time Dashboards</div>
+        <p class="usecase-desc">WebSocket push for live cache invalidation events. Connected clients receive updates the instant a key changes — no polling, zero lag.</p>
+      </div>
+
+      <div class="usecase-card fade-up" style="transition-delay:0.15s">
+        <div class="usecase-icon" aria-hidden="true">&#x1F6A6;</div>
+        <div class="usecase-title">Rate Limiting</div>
+        <p class="usecase-desc">Atomic counter increments with TTL for API rate limiting. INCR + EXPIRE in a single pipelined RESP call — consistent across every node in the cluster.</p>
+      </div>
+
+      <div class="usecase-card fade-up" style="transition-delay:0.20s">
+        <div class="usecase-icon" aria-hidden="true">&#x1F512;</div>
+        <div class="usecase-title">Distributed Locking</div>
+        <p class="usecase-desc">SET with NX (not-exists) and EX (TTL) for distributed mutex. Atomic conditional set guarantees exactly-once acquisition across all clients.</p>
+      </div>
+
+      <div class="usecase-card fade-up" style="transition-delay:0.25s">
+        <div class="usecase-icon" aria-hidden="true">&#x1F4E1;</div>
+        <div class="usecase-title">Pub/Sub Messaging</div>
+        <p class="usecase-desc">Real-time event notifications between microservices. Pattern subscriptions let consumers filter events by topic prefix without separate message broker infrastructure.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── COMPARISON TABLE ───────────────────────────────────────────────── -->
+<section class="section" id="comparison" aria-labelledby="cmp-title">
+  <div class="container">
+    <span class="section-label fade-up">Feature Matrix</span>
+    <h2 class="section-title fade-up" id="cmp-title">How It Compares</h2>
+    <p class="section-desc fade-up">
+      FlashCache is the only solution combining all three protocol stacks with hand-rolled
+      implementations. Most alternatives rely on Netty or similar frameworks.
+    </p>
+    <div class="table-wrapper fade-up" role="region" aria-label="Comparison table" tabindex="0">
+      <table>
+        <caption class="sr-only">Feature comparison between FlashCache, Redis, Memcached, Hazelcast, and Caffeine</caption>
+        <thead>
+          <tr>
+            <th scope="col">Feature</th>
+            <th scope="col" class="highlight">FlashCache</th>
+            <th scope="col">Redis</th>
+            <th scope="col">Memcached</th>
+            <th scope="col">Hazelcast</th>
+            <th scope="col">Caffeine</th>
+          </tr>
+        </thead>
+        <tbody class="col-flash">
+          <tr>
+            <td>Custom NIO event loop (not Netty)</td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+            <td><span class="cross" aria-label="No, in-process">&#x2013;</span></td>
+          </tr>
+          <tr>
+            <td>RESP protocol compatible</td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+          </tr>
+          <tr>
+            <td>HTTP/2 REST API</td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+          </tr>
+          <tr>
+            <td>WebSocket real-time notifications</td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+          </tr>
+          <tr>
+            <td>Consistent hashing with virtual nodes</td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="check" aria-label="Yes (cluster mode)">&#x2713;</span></td>
+            <td><span class="cross" aria-label="Client-side only">&#x2013;</span></td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+          </tr>
+          <tr>
+            <td>LRU eviction O(1)</td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="check" aria-label="Yes (approx LRU)">&#x2713;</span></td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+          </tr>
+          <tr>
+            <td>TLS termination</td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+          </tr>
+          <tr>
+            <td>Cluster gossip discovery</td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="cross" aria-label="No">&#x2013;</span></td>
+            <td><span class="check" aria-label="Yes">&#x2713;</span></td>
+            <td><span class="cross" aria-label="No, single-process">&#x2013;</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── TECH STACK ─────────────────────────────────────────────────────── -->
+<section class="section" aria-labelledby="tech-title">
+  <div class="container">
+    <span class="section-label fade-up">Technology</span>
+    <h2 class="section-title fade-up" id="tech-title">Tech Stack</h2>
+    <p class="section-desc fade-up">
+      Every component is standard-library Java. The only "dependency" is the JVM itself.
+    </p>
+    <div class="tech-tags fade-up">
+      <span class="tech-tag">Java 21</span>
+      <span class="tech-tag">NIO Selector</span>
+      <span class="tech-tag">RESP Protocol</span>
+      <span class="tech-tag">HTTP/2</span>
+      <span class="tech-tag">HPACK</span>
+      <span class="tech-tag">WebSocket RFC 6455</span>
+      <span class="tech-tag">TLS 1.3</span>
+      <span class="tech-tag">Consistent Hashing</span>
+      <span class="tech-tag">SWIM Gossip</span>
+      <span class="tech-tag">LRU</span>
+      <span class="tech-tag">Virtual Threads</span>
+      <span class="tech-tag">JUnit 5</span>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ─────────────────────────────────────────────────────────── -->
+<footer>
+  <div class="container">
+    <div class="footer-badge">
+      <span class="dot"></span>
+      Built with Java 21 &nbsp;&#183;&nbsp; TDD Red-Green-Refactor &nbsp;&#183;&nbsp; 256 tests, 0 failures
+    </div>
+    <p class="footer-author">
+      Designed &amp; built by
+      <a href="https://github.com/ndqkhanh" target="_blank" rel="noopener noreferrer">Nguyen Dinh Quang Khanh</a>
+      &nbsp;&#183;&nbsp;
+      <a href="https://github.com/ndqkhanh/flash-cache" target="_blank" rel="noopener noreferrer">github.com/ndqkhanh/flash-cache</a>
+    </p>
+  </div>
+</footer>
+
+<script>
+  /* ── MERMAID INIT ──────────────────────────────────────────────────── */
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      darkMode: true,
+      background: '#090d14',
+      primaryColor: '#141b27',
+      primaryTextColor: '#f0f2f5',
+      primaryBorderColor: '#E67E22',
+      lineColor: '#E67E22',
+      secondaryColor: '#0e1420',
+      tertiaryColor: '#1a2235',
+      edgeLabelBackground: '#090d14',
+      fontFamily: "'JetBrains Mono', monospace",
+      fontSize: '13px',
+    },
+    flowchart: {
+      curve: 'monotoneX',
+      padding: 20,
+      useMaxWidth: true,
+    },
+  });
+
+  /* ── INTERSECTION OBSERVER (fade-up) ──────────────────────────────── */
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+          observer.unobserve(entry.target);
+        }
+      });
+    },
+    { threshold: 0.08, rootMargin: '0px 0px -40px 0px' }
+  );
+
+  document.querySelectorAll('.fade-up').forEach((el) => observer.observe(el));
+
+  /* ── EXPANDABLE CARDS ──────────────────────────────────────────────── */
+  function toggleCard(btn) {
+    const card = btn.closest('.comp-card');
+    const isOpen = card.classList.contains('open');
+    card.classList.toggle('open');
+    btn.setAttribute('aria-expanded', String(!isOpen));
+  }
+
+  /* ── SMOOTH NAV HIGHLIGHT ──────────────────────────────────────────── */
+  const sections = document.querySelectorAll('section[id]');
+  const navLinks = document.querySelectorAll('.nav-links a');
+
+  const navObserver = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          navLinks.forEach((link) => {
+            link.style.color = link.getAttribute('href') === '#' + entry.target.id
+              ? 'var(--text-hi)'
+              : '';
+          });
+        }
+      });
+    },
+    { rootMargin: '-30% 0px -60% 0px' }
+  );
+
+  sections.forEach((s) => navObserver.observe(s));
+</script>
+</body>
+</html>
